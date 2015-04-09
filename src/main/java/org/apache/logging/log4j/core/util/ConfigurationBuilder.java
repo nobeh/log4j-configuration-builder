@@ -1,6 +1,7 @@
 package org.apache.logging.log4j.core.util;
 
 import java.net.URI;
+import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -22,6 +23,7 @@ import org.apache.logging.log4j.core.appender.ConsoleAppender;
 import org.apache.logging.log4j.core.appender.ConsoleAppender.Target;
 import org.apache.logging.log4j.core.appender.FileAppender;
 import org.apache.logging.log4j.core.appender.RollingFileAppender;
+import org.apache.logging.log4j.core.appender.SyslogAppender;
 import org.apache.logging.log4j.core.appender.rolling.DefaultRolloverStrategy;
 import org.apache.logging.log4j.core.appender.rolling.RolloverStrategy;
 import org.apache.logging.log4j.core.appender.rolling.TimeBasedTriggeringPolicy;
@@ -37,7 +39,10 @@ import org.apache.logging.log4j.core.config.ConfigurationSource;
 import org.apache.logging.log4j.core.config.DefaultConfiguration;
 import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.LoggerFields;
 import org.apache.logging.log4j.core.layout.PatternLayout;
+import org.apache.logging.log4j.core.net.Facility;
+import org.apache.logging.log4j.core.net.ssl.SslConfiguration;
 
 /**
  * A builder class to build an embedded in-memory equivalent of
@@ -58,9 +63,9 @@ public class ConfigurationBuilder {
   /**
    * The key with which Apache Log4j loads the selector class.
    * 
-   * @see <a
-   *      href="http://logging.apache.org/log4j/2.0/manual/async.html">Async
-   *      Loggers</a>
+   * @see <a href=
+   *      "http://logging.apache.org/log4j/2.0/manual/async.html">
+   *      Async Loggers</a>
    */
   private static final String LOG4J_ASYNC_LOGGERS = "Log4jContextSelector";
 
@@ -86,6 +91,7 @@ public class ConfigurationBuilder {
     private final Map<String, String> appenderFooters;
     private final Map<String, String> appenderPatterns;
     private final Set<String> rootAppenders;
+    private final Map<String, SyslogSpec> syslogAppenders;
 
     /**
      * Logging configuration specification constructor.
@@ -100,6 +106,8 @@ public class ConfigurationBuilder {
      * @param loggers the names of the loggers
      * @param appenders the mapping of a logger name to its
      *        appender
+     * @param syslogAppenders the mapping of a syslog appender
+     *        name to its syslog appender
      * @param appenderFileNamePatterns the mapping of a
      *        {@link Appender} name to its file name pattern
      * @param appenderHeaders the mapping of a {@link Appender}
@@ -114,15 +122,16 @@ public class ConfigurationBuilder {
      */
     public Spec(String name, Path directory, Level level, boolean asyncLoggers,
         Map<String, List<String>> loggers, Map<String, String> appenders,
-        Map<String, String> appenderFileNamePatterns, Map<String, String> appenderHeaders,
-        Map<String, String> appenderFooters, Map<String, String> appenderPatterns,
-        Set<String> rootAppenders) {
+        Map<String, SyslogSpec> syslogAppenders, Map<String, String> appenderFileNamePatterns,
+        Map<String, String> appenderHeaders, Map<String, String> appenderFooters,
+        Map<String, String> appenderPatterns, Set<String> rootAppenders) {
       this.name = name;
       this.directory = directory;
       this.level = level;
       this.asyncLoggers = asyncLoggers;
       this.loggers = loggers;
       this.appenders = appenders;
+      this.syslogAppenders = syslogAppenders;
       this.appenderFileNamePatterns = appenderFileNamePatterns;
       this.appenderHeaders = appenderHeaders;
       this.appenderFooters = appenderFooters;
@@ -135,6 +144,10 @@ public class ConfigurationBuilder {
      */
     Collection<String> getAppenderNames() {
       return this.appenders.keySet();
+    }
+
+    Collection<String> getSyslogAppenderNames() {
+      return this.syslogAppenders.keySet();
     }
 
     /**
@@ -187,6 +200,15 @@ public class ConfigurationBuilder {
     }
 
     /**
+     * @param appenderName the name of the
+     *        {@link SyslogAppender}
+     * @return the specification of the {@link SyslogAppender}
+     */
+    SyslogSpec getSyslogSpec(String appenderName) {
+      return this.syslogAppenders.get(appenderName);
+    }
+
+    /**
      * @return the names of the configured loggers
      */
     Collection<String> getLoggerNames() {
@@ -235,6 +257,44 @@ public class ConfigurationBuilder {
   }
 
   /**
+   * A specification for a {@link SyslogAppender}.
+   */
+  private static final class SyslogSpec {
+    final String name;
+    final String host;
+    final int port;
+    final String protocol;
+    final String appName;
+    final String facilityName;
+    final int enterpriseNumber;
+    final String clientHostName;
+
+    /**
+     * @param name
+     * @param host
+     * @param port
+     * @param protocol
+     * @param appName
+     * @param facilityName
+     * @param enterpriseNumber
+     * @param clientHostName
+     */
+    SyslogSpec(String name, String host, int port, String protocol, String appName,
+        String facilityName, final int enterpriseNumber, String clientHostName) {
+      super();
+      this.name = name;
+      this.host = host;
+      this.port = port;
+      this.protocol = protocol;
+      this.appName = appName;
+      this.facilityName = facilityName;
+      this.enterpriseNumber = enterpriseNumber;
+      this.clientHostName = clientHostName;
+    }
+
+  }
+
+  /**
    * An implementation of
    * {@link org.apache.logging.log4j.core.util.Builder} of
    * Apache Log4j for an instance of
@@ -245,8 +305,8 @@ public class ConfigurationBuilder {
    * @see Builder#configure()
    * @see ConfigurationBuilder#newConfiguration()
    */
-  public static class Builder implements
-      org.apache.logging.log4j.core.util.Builder<AbstractConfiguration> {
+  public static class Builder
+      implements org.apache.logging.log4j.core.util.Builder<AbstractConfiguration> {
 
     private static final String NEW_LINE = System.getProperty("line.separator");
 
@@ -257,10 +317,12 @@ public class ConfigurationBuilder {
     private Map<String, String> appenderHeaders = new HashMap<>();
     private Map<String, String> appenderFooters = new HashMap<>();
     private Map<String, String> appenders = new HashMap<>();
+    private Map<String, SyslogSpec> syslogAppenders = new HashMap<>();
     private Map<String, String> appenderFileNamePatterns = new HashMap<>();
     private Map<String, List<String>> loggers = new HashMap<>();
     private Set<String> rootAppenders = new HashSet<>();
     private boolean asyncLoggers = true;
+
 
     /**
      * Set the name of the configuration. For an example see
@@ -317,6 +379,35 @@ public class ConfigurationBuilder {
     public Builder addAppender(String appenderName, String fileName, String fileNamePattern) {
       this.appenders.put(appenderName, fileName);
       this.appenderFileNamePatterns.put(appenderName, fileNamePattern);
+      return this;
+    }
+
+    /**
+     * Add a new {@link SyslogAppender} to the configuration.
+     * The format is fixed to RFC5424. Syslog appenders are only
+     * supported/added to the root logger.
+     * 
+     * @param appenderName
+     * @param host the host name of the receiving Syslog server
+     * @param port the port of the receiving Syslog server
+     * @param protocol the protocol to send a syslog record;
+     *        e.g. <code>UDP</code> or <code>TCP</code>
+     * @param appName the name of the application to appear in
+     *        the syslog
+     * @param facilityName the facility name
+     * @param enterpriseNumber the enterprise number
+     * @param clientHostName the client host name to appear in
+     *        the syslog
+     * @return this builder instance
+     * 
+     * @see SyslogAppender
+     */
+    public Builder addSyslogAppender(String appenderName, String host, final int port,
+        String protocol, String appName, String facilityName, int enterpriseNumber,
+        String clientHostName) {
+      final SyslogSpec syslogSpec = new SyslogSpec(appenderName, host, port, protocol, appName,
+          facilityName, enterpriseNumber, clientHostName);
+      this.syslogAppenders.put(appenderName, syslogSpec);
       return this;
     }
 
@@ -432,10 +523,9 @@ public class ConfigurationBuilder {
      */
     @Override
     public AbstractConfiguration build() {
-      final Spec spec =
-          new Spec(name, directory, level, asyncLoggers, loggers, appenders,
-              appenderFileNamePatterns, appenderHeaders, appenderFooters, appenderPatterns,
-              rootAppenders);
+      final Spec spec = new Spec(name, directory, level, asyncLoggers, loggers, appenders,
+          syslogAppenders, appenderFileNamePatterns, appenderHeaders, appenderFooters,
+          appenderPatterns, rootAppenders);
       return new EmbeddedConfiguration(spec);
     }
 
@@ -449,7 +539,8 @@ public class ConfigurationBuilder {
      * {@link EmbeddedConfiguration} using {@link #build()}.
      * <li>Sets the default {@link ConfigurationFactory} to
      * {@link EmbeddedConfigurationFactory} using
-     * {@link ConfigurationFactory#setConfigurationFactory(ConfigurationFactory)}.
+     * {@link ConfigurationFactory#setConfigurationFactory(ConfigurationFactory)}
+     * .
      * <li>If asynchronous loggers are enabled, creates an
      * instance of {@link AsyncLogger}. If not, creates an
      * instance of {@link LoggerContext}.
@@ -474,10 +565,11 @@ public class ConfigurationBuilder {
      * @see EmbeddedConfiguration
      */
     public final void configure() {
-      final LoggerContext context =
-          asyncLoggers ? (AsyncLoggerContext) LogManager.getContext(
-              ConfigurationBuilder.class.getClassLoader(), false) : (LoggerContext) LogManager
-              .getContext(ConfigurationBuilder.class.getClassLoader(), false);
+      final LoggerContext context = asyncLoggers
+          ? (AsyncLoggerContext) LogManager.getContext(ConfigurationBuilder.class.getClassLoader(),
+              false)
+          : (LoggerContext) LogManager.getContext(ConfigurationBuilder.class.getClassLoader(),
+              false);
       final AbstractConfiguration configuration = build();
       final EmbeddedConfigurationFactory factory = new EmbeddedConfigurationFactory(configuration);
       ConfigurationFactory.setConfigurationFactory(factory);
@@ -590,9 +682,9 @@ public class ConfigurationBuilder {
      * <ul>
      * <li>The name is set to {@link Spec#getName()}.
      * <li>Appenders from the parent object are cleared.
-     * <li> {@link Appender}s are created
+     * <li>{@link Appender}s are created
      * {@link #buildAppenders(Spec)}.
-     * <li> {@link LoggerConfig}s are created using
+     * <li>{@link LoggerConfig}s are created using
      * {@link #buildLoggerConfigs(Spec)}.
      * <li>Every {@link LoggerConfig} is configured with its
      * {@link Appender} using
@@ -612,6 +704,7 @@ public class ConfigurationBuilder {
 
       // Build Appenders
       final Map<String, Appender> appenders = buildAppenders(spec);
+      final Map<String, SyslogAppender> syslogAppenders = buildSyslogAppenders(spec);
 
       // Build Logger Configs
       final Map<String, LoggerConfig> loggers = buildLoggerConfigs(spec);
@@ -620,15 +713,14 @@ public class ConfigurationBuilder {
       configureLoggerAppenders(spec, appenders, loggers);
 
       // Configure root logger appenders
-      configureRootLogger(spec, appenders);
+      configureRootLogger(spec, appenders, syslogAppenders);
     }
 
     /*
      * (non-Javadoc)
      * 
-     * @see
-     * org.apache.logging.log4j.core.config.AbstractConfiguration
-     * #doConfigure()
+     * @see org.apache.logging.log4j.core.config.
+     * AbstractConfiguration #doConfigure()
      */
     @Override
     protected void doConfigure() {
@@ -643,10 +735,16 @@ public class ConfigurationBuilder {
      * @param spec
      * @param appenders the built {@link Appender}s in the
      *        configuration
+     * @param syslogAppenders the built {@link SyslogAppender}s
+     *        in the configuration
      */
-    protected void configureRootLogger(Spec spec, final Map<String, Appender> appenders) {
+    protected void configureRootLogger(Spec spec, final Map<String, Appender> appenders,
+        Map<String, SyslogAppender> syslogAppenders) {
       for (String appenderName : spec.getRootAppenders()) {
         Appender appender = appenders.get(appenderName);
+        getRootLogger().addAppender(appender, spec.getLevel(), null);
+      }
+      for (SyslogAppender appender : syslogAppenders.values()) {
         getRootLogger().addAppender(appender, spec.getLevel(), null);
       }
       getRootLogger().setLevel(spec.getLevel());
@@ -710,7 +808,8 @@ public class ConfigurationBuilder {
      * <li>By default, a {@link FileAppender} is configured with
      * <i>daily</i> rollover strategy and a <i>30</i> maximum
      * files to keep strategy. See
-     * {@link ConfigurationBuilder#createFileAppender(Configuration, String, String, String, PatternLayout)}.
+     * {@link ConfigurationBuilder#createFileAppender(Configuration, String, String, String, PatternLayout)}
+     * .
      * </ul>
      * 
      * @param spec the instance of {@link Spec}
@@ -740,15 +839,34 @@ public class ConfigurationBuilder {
           // XXX Candidate to be added to the builder API.
           String rolloverInterval = "1";
           String retentionInterval = "30";
-          appender =
-              createFileAppender(this, fileName, fileNamePattern, appenderName, layout,
-                  rolloverInterval, retentionInterval);
+          appender = createFileAppender(this, fileName, fileNamePattern, appenderName, layout,
+              rolloverInterval, retentionInterval);
         }
         appenders.put(appenderName, appender);
         addAppender(appender);
       }
       return appenders;
     }
+
+    /**
+     * @param spec
+     * @return
+     */
+    protected Map<String, SyslogAppender> buildSyslogAppenders(Spec spec) {
+      Map<String, SyslogAppender> syslogAppenders = new HashMap<>();
+      Collection<String> syslogAppenderNames = spec.getSyslogAppenderNames();
+      for (String appenderName : syslogAppenderNames) {
+        SyslogSpec sspec = spec.getSyslogSpec(appenderName);
+        SyslogAppender syslogAppender =
+            createSyslogAppender(sspec.name, sspec.host, sspec.port, sspec.protocol, sspec.appName,
+                this, sspec.facilityName, sspec.enterpriseNumber, sspec.clientHostName);
+        syslogAppenders.put(appenderName, syslogAppender);
+        addAppender(syslogAppender);
+      }
+      return syslogAppenders;
+    }
+
+
 
   }
 
@@ -781,8 +899,8 @@ public class ConfigurationBuilder {
   protected static PatternLayout createLayout(final Configuration configuration,
       final String header, final String footer, final String pattern) {
     return PatternLayout.newBuilder().withAlwaysWriteExceptions(true)
-        .withConfiguration(configuration).withHeader(header).withFooter(footer)
-        .withPattern(pattern).withRegexReplacement(null).build();
+        .withConfiguration(configuration).withHeader(header).withFooter(footer).withPattern(pattern)
+        .withRegexReplacement(null).build();
   }
 
   /**
@@ -822,13 +940,12 @@ public class ConfigurationBuilder {
     final String minFilesToKeep = "1";
     final String fileIndex = null;
     final String compressionLevelStr = Integer.toString(Deflater.DEFAULT_COMPRESSION);
-    final RolloverStrategy rolloverStrategy =
-        DefaultRolloverStrategy.createStrategy(maximumFilesToKeep, minFilesToKeep, fileIndex,
-            compressionLevelStr, configuration);
+    final RolloverStrategy rolloverStrategy = DefaultRolloverStrategy.createStrategy(
+        maximumFilesToKeep, minFilesToKeep, fileIndex, compressionLevelStr, configuration);
 
     return RollingFileAppender.createAppender(fileName, fileNamePattern, append, appenderName,
-        bufferedIO, bufferSizeStr, immediateFlush, policy, rolloverStrategy, layout, filter,
-        ignore, advertise, advertiseURI, configuration);
+        bufferedIO, bufferSizeStr, immediateFlush, policy, rolloverStrategy, layout, filter, ignore,
+        advertise, advertiseURI, configuration);
   }
 
   /**
@@ -844,6 +961,57 @@ public class ConfigurationBuilder {
     String follow = Boolean.FALSE.toString();
     String ignore = Boolean.FALSE.toString();
     return ConsoleAppender.createAppender(layout, filter, targetStr, name, follow, ignore);
+  }
+
+  /**
+   * Creates an instance of {@link SyslogAppender}. Parameters
+   * match that of appearing in the same method in
+   * {@link SyslogAppender}.
+   * 
+   * @param name
+   * @param host
+   * @param port
+   * @param protocolStr
+   * @param appName
+   * @param config
+   * @param facilityName
+   * @param enterpriseNumber
+   * @param clientHostName
+   * @return an instance of {@link SyslogAppender}
+   */
+  protected static SyslogAppender createSyslogAppender(String name, String host, int port,
+      String protocolStr, String appName, Configuration config, String facilityName,
+      int enterpriseNumber, String clientHostName) {
+    final SslConfiguration sslConfig = null;
+    int connectTimeoutMillis = 0;
+    int reconnectionDelayMillis = 0;
+    boolean immediateFail = true;
+    boolean immediateFlush = true;
+    boolean ignoreExceptions = true;
+    Facility facility = Facility.toFacility(facilityName, Facility.USER);
+    String id = null;
+    boolean includeMdc = false;
+    String mdcId = "mdc-ignored-id";
+    String mdcPrefix = null;
+    String eventPrefix = "|/" + clientHostName + "/" + appName + ".log|";
+    boolean newLine = true;
+    String escapeNL = null;
+    String msgId = appName;
+    String mdcExcludes = null;
+    String mdcIncludes = null;
+    String mdcRequired = null;
+    String format = "RFC5424";
+    Filter filter = null;
+    Charset charsetName = Charset.defaultCharset();
+    String exceptionPattern = null;
+    LoggerFields[] loggerFields = new LoggerFields[0];
+    boolean advertise = false;
+    SyslogAppender sla = SyslogAppender.createAppender(host, port, protocolStr, sslConfig,
+        connectTimeoutMillis, reconnectionDelayMillis, immediateFail, name, immediateFlush,
+        ignoreExceptions, facility, id, enterpriseNumber, includeMdc, mdcId, mdcPrefix, eventPrefix,
+        newLine, escapeNL, appName, msgId, mdcExcludes, mdcIncludes, mdcRequired, format, filter,
+        config, charsetName, exceptionPattern, loggerFields, advertise);
+    return sla;
   }
 
   /**

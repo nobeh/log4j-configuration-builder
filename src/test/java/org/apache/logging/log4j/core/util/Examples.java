@@ -56,8 +56,8 @@ public class Examples {
 
     builder.setLogDirectory(Paths.get("/tmp/myapp"));
     builder.addAppender("file-appender", "myapp.log", "myapp.log-%d{yyyy-MM-dd}");
-    builder
-        .setAppenderPatternLayout("file-appender", "[%d] [%level] [%thread] %msg (%logger{1})%n");
+    builder.setAppenderPatternLayout("file-appender",
+        "[%d] [%level] [%thread] %msg (%logger{1})%n");
 
     builder.addAppender("console-appender", null, null);
     builder.setAppenderPatternLayout("console-appender",
@@ -72,8 +72,30 @@ public class Examples {
 
   }
 
+  /**
+   * A default configuration with syslog integration
+   */
+  static void exampleConfiguration4Syslog() {
+    ConfigurationBuilder.Builder builder = ConfigurationBuilder.newConfiguration();
+    builder.setConfigurationName("my-config-syslog");
+    builder.disableAsyncLoggers();
+    builder.setLevel("DEBUG");
+    builder.addAppender("root-appender", null, null);
+    builder.addSyslogAppender("root-syslog", "10.100.102.89", 514, "UDP", "test-app", "USER", 1000,
+        "nobeh");
+    builder.setAppenderPatternLayout("root-appender", "[%d] [%level] [%thread] %msg%n");
+    builder.addRootAppender("root-appender");
+    builder.configure();
+
+    Logger logger = LogManager.getLogger(Examples.class);
+    logger.debug("Debug logging example 4 + syslog ...");
+    logger.info("Info logging example 4 + syslog ...");
+    logger.error("Error logging example 4 + syslog ...");
+  }
+
   public static void main(String[] args) throws Exception {
-    exampleConfiguration3();
+    exampleConfiguration4Syslog();
+    Thread.sleep(5000);
   }
 
 }
